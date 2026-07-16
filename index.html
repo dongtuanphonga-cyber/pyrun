@@ -1,0 +1,1910 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PyRun — Trình chạy Python</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<!-- CodeMirror core + python mode -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/selection/active-line.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
+
+<style>
+:root{
+  --bg-0:#181a1f;
+  --bg-1:#1f2228;
+  --bg-2:#262a32;
+  --bg-3:#2f333c;
+  --line:#33383f;
+  --text:#d7dbe0;
+  --text-dim:#8a919c;
+  --accent:#5fc4ff;
+  --accent-2:#8b7bff;
+  --good:#54d18c;
+  --warn:#f2b84b;
+  --bad:#ff6b6b;
+  --radius:14px;
+  --taskbar-h:60px;
+}
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{
+  margin:0;
+  height:100vh;
+  overflow:hidden;
+  background:
+    radial-gradient(circle at 15% 10%, #23283180 0%, transparent 45%),
+    radial-gradient(circle at 85% 90%, #1a2b3380 0%, transparent 45%),
+    var(--bg-0);
+  font-family:'Inter', sans-serif;
+  color:var(--text);
+}
+
+/* Desktop area */
+#desktop{
+  position:relative;
+  width:100%;
+  height:calc(100vh - var(--taskbar-h));
+  overflow:hidden;
+}
+#desktop .empty-hint{
+  position:absolute; inset:0;
+  display:flex; align-items:center; justify-content:center;
+  color:var(--text-dim);
+  font-size:14px;
+  text-align:center;
+  padding:20px;
+  pointer-events:none;
+}
+
+/* Window with Jelly Effect */
+.win{
+  position:absolute;
+  width:min(1180px, 92vw);
+  background:var(--bg-1);
+  border:1px solid var(--line);
+  border-radius:20px;
+  overflow:hidden;
+  box-shadow:0 30px 80px -30px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.02) inset;
+  display:flex;
+  flex-direction:column;
+  animation:appIn .35s cubic-bezier(.2,.9,.25,1);
+  /* Chuyển đổi mượt mà hiệu ứng Jelly bằng JS */
+  transform-origin: center center;
+  transition: transform 0.08s linear, opacity 0.3s ease;
+}
+@keyframes appIn{
+  from{opacity:0; transform:translateY(18px) scale(.985);}
+  to{opacity:1; transform:none;}
+}
+.win.minimized{display:none;}
+
+/* Sửa lỗi nút xanh lá không Fullscreen thật sự */
+.win.maximized{
+  position:fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: var(--taskbar-h) !important;
+  width: 100vw !important;
+  height: calc(100vh - var(--taskbar-h)) !important;
+  border-radius: 0 !important;
+  border: none !important;
+  transform: none !important;
+  z-index: 350 !important;
+}
+.win.maximized .editor-wrap{flex:1;}
+.win.maximized .CodeMirror{height:100% !important;}
+.win.maximized .code-textarea{height:100% !important;}
+
+/* Sửa chuột kéo thả và dán: Không hiển thị bàn tay (pointer) */
+.win .titlebar{cursor: default !important;}
+.win.dragging .titlebar{cursor: default !important;}
+.win.dragging{transition: none !important;}
+
+/* Đóng cửa sổ */
+.win.closing{
+  animation: tvOff .38s cubic-bezier(.4,0,.2,1) forwards;
+  pointer-events:none;
+}
+@keyframes tvOff{
+  0%   { transform: scale(1,1);     opacity:1; filter:brightness(1); }
+  55%  { transform: scale(1,0.02);  opacity:1; filter:brightness(1.7); }
+  100% { transform: scale(0,0.02);  opacity:0; filter:brightness(2.2); }
+}
+
+/* Genie effect */
+.win.genie-out{
+  animation: genieOut .38s cubic-bezier(.4,0,.2,1) forwards;
+  pointer-events:none;
+}
+.win.genie-in{
+  animation: genieIn .4s cubic-bezier(.2,.9,.25,1) forwards;
+  pointer-events:none;
+}
+@keyframes genieOut{
+  0%   { transform: translate(0,0) scale(1,1); opacity:1; }
+  45%  { transform: translate(calc(var(--gx,0px)*0.45), calc(var(--gy,0px)*0.45)) scale(0.65,0.32); opacity:.95; }
+  100% { transform: translate(var(--gx,0px), var(--gy,0px)) scale(0.03,0.03); opacity:0; }
+}
+@keyframes genieIn{
+  0%   { transform: translate(var(--gx,0px), var(--gy,0px)) scale(0.03,0.03); opacity:0; }
+  55%  { transform: translate(calc(var(--gx,0px)*0.45), calc(var(--gy,0px)*0.45)) scale(0.65,0.32); opacity:.95; }
+  100% { transform: translate(0,0) scale(1,1); opacity:1; }
+}
+
+/* Title bar */
+.titlebar{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:12px 18px;
+  background:var(--bg-2);
+  border-bottom:1px solid var(--line);
+  user-select: none;
+}
+.dots{display:flex; gap:7px;}
+.dots button{
+  width:12px; height:12px; border-radius:50%; display:inline-block;
+  border:none; padding:0; cursor:default; outline:none;
+  transition:filter .15s ease, transform .15s ease;
+}
+.dots button:hover{filter:brightness(1.2); transform:scale(1.1);}
+.dots button.dot-close{background:#ff6058;}
+.dots button.dot-min{background:#ffbd2e;}
+.dots button.dot-max{background:#28c840;}
+.titlebar .filename{
+  margin-left:6px;
+  font-family:'JetBrains Mono', monospace;
+  font-size:13px;
+  color:var(--text-dim);
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
+.titlebar .filename .filename-text{color:var(--text); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px;}
+.rename-btn{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:22px; height:22px;
+  border-radius:6px;
+  border:none;
+  background:transparent;
+  color:var(--text-dim);
+  cursor:default;
+  transition:all .25s ease;
+  flex-shrink:0;
+}
+.rename-btn svg{width:13px; height:13px;}
+.rename-btn:hover{background:var(--bg-3); color:var(--accent);}
+.filename-input{
+  font-family:'JetBrains Mono', monospace;
+  font-size:13px;
+  font-weight:600;
+  color:var(--text);
+  background:var(--bg-3);
+  border:1px solid var(--accent);
+  border-radius:6px;
+  padding:2px 6px;
+  outline:none;
+  width:180px;
+}
+.dot-unsaved{
+  width:7px;height:7px;border-radius:50%;
+  background:var(--warn);
+  opacity:0;
+  transform:scale(0);
+  transition:all .25s cubic-bezier(.2,.9,.25,1);
+  flex-shrink:0;
+}
+.dot-unsaved.show{opacity:1; transform:scale(1);}
+
+/* Toolbar */
+.toolbar{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:12px 16px;
+  background:var(--bg-1);
+  border-bottom:1px solid var(--line);
+  flex-wrap:wrap;
+}
+.tool-btn{
+  position:relative;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:9px 16px;
+  border-radius:10px;
+  border:1px solid var(--line);
+  background:var(--bg-2);
+  color:var(--text);
+  font-family:'Inter', sans-serif;
+  font-size:13.5px;
+  font-weight:600;
+  cursor:default;
+  overflow:hidden;
+  transition:transform .35s cubic-bezier(.2,.9,.25,1), background .35s ease, border-color .35s ease, box-shadow .35s ease;
+}
+.tool-btn svg{width:16px; height:16px; flex-shrink:0; transition:transform .35s cubic-bezier(.2,.9,.25,1);}
+.tool-btn::before{
+  content:"";
+  position:absolute; inset:0;
+  background:radial-gradient(circle at var(--mx,50%) var(--my,50%), rgba(255,255,255,.14), transparent 60%);
+  opacity:0;
+  transition:opacity .35s ease;
+}
+.tool-btn:hover::before{opacity:1;}
+.tool-btn:hover{transform:translateY(-2px); border-color:var(--btn-color, var(--accent));}
+.tool-btn:active{transform:translateY(0) scale(.97);}
+.tool-btn:hover svg{transform:scale(1.08) rotate(var(--icon-rot,0deg));}
+
+.tool-btn.run{--btn-color:var(--good);}
+.tool-btn.run svg{color:var(--good);}
+.tool-btn.run:hover{box-shadow:0 8px 22px -10px rgba(84,209,140,.55);}
+
+.tool-btn.debug{--btn-color:var(--warn); --icon-rot:-8deg;}
+.tool-btn.debug svg{color:var(--warn);}
+.tool-btn.debug:hover{box-shadow:0 8px 22px -10px rgba(242,184,75,.55);}
+
+.tool-btn.selectall{--btn-color:var(--accent-2);}
+.tool-btn.selectall svg{color:var(--accent-2);}
+.tool-btn.selectall:hover{box-shadow:0 8px 22px -10px rgba(139,123,255,.5);}
+
+.tool-btn.save{--btn-color:var(--accent);}
+.tool-btn.save svg{color:var(--accent);}
+.tool-btn.save:hover{box-shadow:0 8px 22px -10px rgba(95,196,255,.5);}
+
+.tool-btn.history{--btn-color:#59d0c9;}
+.tool-btn.history svg{color:#59d0c9;}
+.tool-btn.history:hover{box-shadow:0 8px 22px -10px rgba(89,208,201,.5);}
+
+.tool-btn.trash{--btn-color:var(--bad); --icon-rot:10deg; margin-left:auto;}
+.tool-btn.trash svg{color:var(--bad);}
+.tool-btn.trash:hover{box-shadow:0 8px 22px -10px rgba(255,107,107,.5);}
+
+.spinner{
+  width:14px;height:14px;border-radius:50%;
+  border:2px solid rgba(255,255,255,.25);
+  border-top-color:currentColor;
+  display:none;
+  animation:spin .7s linear infinite;
+}
+.tool-btn.loading .spinner{display:inline-block;}
+.tool-btn.loading svg{display:none;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+/* Editor */
+.editor-wrap{
+  position:relative;
+  border-bottom:1px solid var(--line);
+}
+.code-textarea{
+  display:block;
+  width:100%;
+  height:360px;
+  box-sizing:border-box;
+  background:var(--bg-0);
+  color:var(--text);
+  font-family:'JetBrains Mono', monospace;
+  font-size:14px;
+  line-height:1.65;
+  border:none;
+  outline:none;
+  resize:vertical;
+  padding:12px 14px;
+  tab-size:4;
+  -moz-tab-size:4;
+}
+.CodeMirror{
+  height:360px;
+  font-family:'JetBrains Mono', monospace !important;
+  font-size:14px;
+  line-height:1.65;
+  background:var(--bg-0) !important;
+  color:var(--text) !important;
+  padding:6px 0;
+}
+.CodeMirror-gutters{
+  background:var(--bg-0) !important;
+  border-right:1px solid var(--line) !important;
+}
+.CodeMirror-linenumber{color:#4c525c !important;}
+.CodeMirror-activeline-background{background:rgba(95,196,255,.06) !important;}
+.CodeMirror-cursor{border-left:2px solid var(--accent) !important;}
+.cm-problem-line{background:rgba(255,107,107,.10);}
+
+/* VS Code dark-like tokens */
+.cm-s-default .cm-keyword{color:#c586c0;}
+.cm-s-default .cm-def{color:#dcdcaa;}
+.cm-s-default .cm-variable{color:#9cdcfe;}
+.cm-s-default .cm-variable-2{color:#9cdcfe;}
+.cm-s-default .cm-property{color:#9cdcfe;}
+.cm-s-default .cm-string{color:#ce9178;}
+.cm-s-default .cm-string-2{color:#ce9178;}
+.cm-s-default .cm-number{color:#b5cea8;}
+.cm-s-default .cm-comment{color:#6a9955; font-style:italic;}
+.cm-s-default .cm-operator{color:#d4d4d4;}
+.cm-s-default .cm-builtin{color:#4ec9b0;}
+.cm-s-default .cm-atom{color:#569cd6;}
+.cm-s-default .cm-meta{color:#569cd6;}
+
+/* Tabs (Output / Problems) */
+.panel{
+  background:var(--bg-1);
+}
+.tabs{
+  display:flex;
+  align-items:center;
+  gap:2px;
+  padding:8px 16px 0;
+  position:relative;
+}
+.tab{
+  padding:9px 16px;
+  font-size:13px;
+  font-weight:600;
+  color:var(--text-dim);
+  cursor:default;
+  border-radius:9px 9px 0 0;
+  position:relative;
+  z-index:1;
+  display:flex;
+  align-items:center;
+  gap:7px;
+  transition:color .3s ease;
+}
+.tab.active{color:var(--text);}
+.tab .badge{
+  background:var(--bad);
+  color:#1a1a1a;
+  font-size:10px;
+  font-weight:800;
+  border-radius:20px;
+  padding:1px 6px;
+  min-width:16px;
+  text-align:center;
+  transform:scale(0);
+  transition:transform .3s cubic-bezier(.3,1.5,.4,1);
+}
+.tab .badge.show{transform:scale(1);}
+.tab-indicator{
+  position:absolute;
+  bottom:0;
+  height:3px;
+  border-radius:3px 3px 0 0;
+  background:var(--accent);
+  transition:left .4s cubic-bezier(.2,.9,.25,1), width .4s cubic-bezier(.2,.9,.25,1);
+}
+
+.panel-body{
+  height:190px;
+  overflow:auto;
+  padding:14px 18px;
+  font-family:'JetBrains Mono', monospace;
+  font-size:13px;
+  line-height:1.7;
+  border-top:1px solid var(--line);
+}
+.view{display:none; animation:fadeUp .35s cubic-bezier(.2,.9,.25,1);}
+.view.active{display:block;}
+@keyframes fadeUp{from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;}}
+
+.out-line{white-space:pre-wrap; word-break:break-word;}
+.out-line.err{color:var(--bad);}
+.out-line.ok{color:var(--good);}
+.placeholder{color:var(--text-dim); font-style:italic;}
+
+.problem-item{
+  display:flex;
+  gap:10px;
+  align-items:flex-start;
+  padding:8px 0;
+  border-bottom:1px dashed var(--line);
+  cursor:default;
+  transition:padding-left .25s ease;
+}
+.problem-item:hover{padding-left:6px;}
+.problem-item:last-child{border-bottom:none;}
+.problem-icon{flex-shrink:0; margin-top:2px;}
+.problem-icon.error svg{color:var(--bad);}
+.problem-icon.warn svg{color:var(--warn);}
+.problem-text b{color:var(--text); font-weight:600;}
+.problem-loc{color:var(--text-dim); font-size:12px;}
+
+/* Status bar */
+.statusbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:7px 18px;
+  background:linear-gradient(90deg, #3a3fbf, #6a4fd9);
+  font-size:12px;
+  font-weight:600;
+  color:#fff;
+}
+.statusbar .right{display:flex; gap:16px; opacity:.9;}
+.status-dot{
+  width:7px;height:7px;border-radius:50%;
+  background:var(--good);
+  display:inline-block;
+  margin-right:6px;
+  box-shadow:0 0 0 0 rgba(84,209,140,.6);
+  animation:pulse 2s infinite;
+}
+@keyframes pulse{
+  0%{box-shadow:0 0 0 0 rgba(84,209,140,.55);}
+  70%{box-shadow:0 0 0 7px rgba(84,209,140,0);}
+  100%{box-shadow:0 0 0 0 rgba(84,209,140,0);}
+}
+
+/* Modal */
+.modal-backdrop{
+  position:fixed; inset:0;
+  background:rgba(10,11,14,.55);
+  backdrop-filter:blur(3px);
+  display:flex; align-items:center; justify-content:center;
+  opacity:0; pointer-events:none;
+  transition:opacity .3s ease;
+  z-index:500;
+}
+.modal-backdrop.show{opacity:1; pointer-events:auto;}
+.modal{
+  width:min(380px, 88vw);
+  background:var(--bg-2);
+  border:1px solid var(--line);
+  border-radius:18px;
+  padding:22px 24px 20px;
+  box-shadow:0 30px 70px -20px rgba(0,0,0,.6);
+  transform:scale(.4) translateY(30px);
+  transform-origin:var(--ox,50%) var(--oy,50%);
+  opacity:0;
+  transition:transform .45s cubic-bezier(.2,1.4,.3,1), opacity .3s ease;
+}
+.modal-backdrop.show .modal{transform:scale(1) translateY(0); opacity:1;}
+.modal h3{margin:0 0 8px; font-size:16px; display:flex; align-items:center; gap:9px;}
+.modal p{margin:0 0 20px; color:var(--text-dim); font-size:13.5px; line-height:1.55;}
+.modal-actions{display:flex; gap:10px; justify-content:flex-end;}
+.modal-actions button{
+  padding:9px 16px;
+  border-radius:9px;
+  font-weight:600;
+  font-size:13px;
+  border:1px solid var(--line);
+  cursor:default;
+  transition:transform .2s ease, filter .2s ease;
+}
+.modal-actions button:hover{transform:translateY(-1px);}
+.btn-cancel{background:var(--bg-3); color:var(--text);}
+.btn-confirm{background:var(--bad); color:#fff; border-color:var(--bad);}
+
+/* Drawer */
+.drawer-backdrop{
+  position:fixed; inset:0;
+  background:rgba(10,11,14,.5);
+  backdrop-filter:blur(2px);
+  opacity:0; pointer-events:none;
+  transition:opacity .35s ease;
+  z-index:400;
+  display:flex;
+  justify-content:flex-end;
+}
+.drawer-backdrop.show{opacity:1; pointer-events:auto;}
+.drawer{
+  width:min(360px, 88vw);
+  height:100%;
+  background:var(--bg-2);
+  border-left:1px solid var(--line);
+  padding:20px;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+  transform:translateX(100%);
+  transition:transform .45s cubic-bezier(.2,.9,.25,1);
+  box-shadow:-30px 0 60px -20px rgba(0,0,0,.5);
+}
+.drawer-backdrop.show .drawer{transform:translateX(0);}
+.drawer-head{
+  display:flex; align-items:center; justify-content:space-between;
+}
+.drawer-head h3{
+  margin:0; font-size:15px; display:flex; align-items:center; gap:8px; color:var(--text);
+}
+.drawer-head h3 svg{color:var(--accent);}
+.drawer-close{
+  width:30px; height:30px; border-radius:8px; border:none;
+  background:var(--bg-3); color:var(--text-dim); cursor:default;
+  display:flex; align-items:center; justify-content:center;
+  transition:all .25s ease;
+}
+.drawer-close svg{width:15px; height:15px;}
+.drawer-close:hover{color:var(--bad); background:rgba(255,107,107,.12);}
+
+.new-file-btn{
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  padding:10px; border-radius:10px;
+  border:1px dashed var(--line);
+  background:transparent;
+  color:var(--accent);
+  font-weight:600; font-size:13.5px;
+  cursor:default;
+  transition:all .25s ease;
+}
+.new-file-btn svg{width:15px; height:15px;}
+.new-file-btn:hover{background:rgba(95,196,255,.08); border-color:var(--accent);}
+
+.file-list{
+  flex:1;
+  overflow-y:auto;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.file-item{
+  border:1px solid var(--line);
+  border-radius:12px;
+  padding:12px 14px;
+  background:var(--bg-1);
+  transition:border-color .25s ease, transform .25s ease;
+  animation:fadeUp .3s cubic-bezier(.2,.9,.25,1);
+}
+.file-item.current{border-color:var(--accent);}
+.file-item-top{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  margin-bottom:4px;
+}
+.file-item-name{
+  display:flex; align-items:center; gap:7px;
+  font-weight:600; font-size:13.5px; color:var(--text);
+  font-family:'JetBrains Mono', monospace;
+  min-width:0;
+}
+.file-item-name span.txt{overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.file-item-name .cur-badge{
+  font-size:10px; font-weight:800; color:var(--bg-0);
+  background:var(--accent); border-radius:20px; padding:1px 7px;
+  flex-shrink:0;
+}
+.file-item-time{font-size:11.5px; color:var(--text-dim); margin-bottom:8px;}
+.file-item-actions{display:flex; gap:6px;}
+.file-item-actions button{
+  width:28px; height:28px;
+  border-radius:7px; border:1px solid var(--line);
+  background:var(--bg-2); color:var(--text-dim);
+  cursor:default; display:flex; align-items:center; justify-content:center;
+  transition:all .2s ease;
+}
+.file-item-actions button svg{width:13.5px; height:13.5px;}
+.file-item-actions button:hover{transform:translateY(-1px);}
+.file-item-actions .fa-open:hover{color:var(--accent); border-color:var(--accent);}
+.file-item-actions .fa-rename:hover{color:var(--warn); border-color:var(--warn);}
+.file-item-actions .fa-download:hover{color:var(--good); border-color:var(--good);}
+.file-item-actions .fa-delete:hover{color:var(--bad); border-color:var(--bad);}
+.file-rename-input{
+  width:100%;
+  font-family:'JetBrains Mono', monospace;
+  font-size:13.5px; font-weight:600;
+  background:var(--bg-3); color:var(--text);
+  border:1px solid var(--accent); border-radius:6px;
+  padding:3px 7px; outline:none;
+}
+
+/* Toast */
+.toast{
+  position:fixed;
+  bottom:calc(var(--taskbar-h) + 20px); left:50%;
+  transform:translate(-50%, 20px);
+  background:var(--bg-2);
+  border:1px solid var(--line);
+  padding:12px 18px;
+  border-radius:12px;
+  font-size:13px;
+  font-weight:600;
+  display:flex; align-items:center; gap:9px;
+  opacity:0;
+  transition:all .4s cubic-bezier(.2,.9,.25,1);
+  z-index:600;
+  box-shadow:0 20px 45px -15px rgba(0,0,0,.6);
+}
+.toast.show{opacity:1; transform:translate(-50%, 0);}
+.toast svg{color:var(--good); width:16px; height:16px;}
+
+/* Taskbar */
+#taskbar{
+  position:fixed;
+  left:0; right:0; bottom:0;
+  height:var(--taskbar-h);
+  background:var(--bg-2);
+  border-top:1px solid var(--line);
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:0 14px;
+  z-index:400; /* Đặt phía dưới maximized win (350) */
+  overflow-x:auto;
+}
+#taskbarWins{display:flex; align-items:center; gap:8px; flex:1; min-width:0; overflow-x:auto;}
+.taskbar-win-btn{
+  display:flex; align-items:center; gap:8px;
+  padding:8px 14px;
+  border-radius:10px;
+  border:1px solid var(--line);
+  background:var(--bg-3);
+  color:var(--text-dim);
+  font-family:'JetBrains Mono', monospace;
+  font-size:12.5px;
+  font-weight:600;
+  cursor:default;
+  white-space:nowrap;
+  flex-shrink:0;
+  transition:all .2s ease;
+  max-width:220px;
+  overflow:hidden;
+}
+.taskbar-win-btn .dot{width:6px;height:6px;border-radius:50%;background:var(--good); flex-shrink:0;}
+.taskbar-win-btn .txt{overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.taskbar-win-btn.active{color:var(--text); border-color:var(--accent); background:var(--bg-1);}
+.taskbar-win-btn.minimized .dot{background:var(--text-dim);}
+.taskbar-win-btn:hover{border-color:var(--accent); color:var(--text);}
+#taskbarNewBtn{
+  display:flex; align-items:center; justify-content:center;
+  width:38px; height:38px;
+  border-radius:10px;
+  border:1px dashed var(--line);
+  background:transparent;
+  color:var(--accent);
+  cursor:default;
+  flex-shrink:0;
+  font-size:19px;
+  font-weight:700;
+  line-height:1;
+  transition:all .2s ease;
+}
+#taskbarNewBtn:hover{background:rgba(95,196,255,.1); border-color:var(--accent);}
+
+@media (max-width:640px){
+  .toolbar{gap:8px;}
+  .tool-btn{padding:8px 12px; font-size:12.5px;}
+  .tool-btn span.label{display:none;}
+  .CodeMirror{height:300px;}
+  .code-textarea{height:300px;}
+}
+</style>
+</head>
+<body>
+
+<div id="desktop"></div>
+
+<div id="taskbar">
+  <div id="taskbarWins"></div>
+  <button id="taskbarNewBtn" title="Mở cửa sổ code mới">+</button>
+</div>
+
+<template id="winTemplate">
+  <div class="win">
+    <div class="titlebar">
+      <div class="dots">
+        <button class="dot-close" title="Đóng cửa sổ"></button>
+        <button class="dot-min" title="Thu nhỏ"></button>
+        <button class="dot-max" title="Phóng to trong trang"></button>
+      </div>
+      <div class="filename">
+        <b class="filename-text">script.py</b>
+        <input class="filename-input" spellcheck="false" style="display:none">
+        <button class="rename-btn" title="Đổi tên / định dạng file">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        </button>
+        <span class="dot-unsaved"></span>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <button class="tool-btn run btn-run" title="Chạy script">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>
+        <span class="spinner"></span>
+        <span class="label">Chạy</span>
+      </button>
+
+      <button class="tool-btn debug btn-debug" title="Kiểm tra & gỡ lỗi">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <ellipse cx="12" cy="13" rx="6" ry="7"></ellipse>
+          <path d="M9 5 7 3M15 5l2-2M4 10H2M22 10h-2M4 16H2M22 16h-2M6.5 8 4 6.5M17.5 8 20 6.5M6.5 18 4 19.5M17.5 18 20 19.5"></path>
+        </svg>
+        <span class="spinner"></span>
+        <span class="label">Debug</span>
+      </button>
+
+      <button class="tool-btn selectall btn-selectall" title="Chọn toàn bộ code">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 8V5a1 1 0 0 1 1-1h3M20 8V5a1 1 0 0 1-1-1h-3M4 16v3a1 1 0 0 0 1 1h3M20 16v3a1 1 0 0 1-1 1h-3"></path>
+          <rect x="7.5" y="7.5" width="9" height="9" rx="1"></rect>
+        </svg>
+        <span class="label">Chọn tất cả</span>
+      </button>
+
+      <button class="tool-btn save btn-save" title="Lưu file (định dạng theo tên file)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v11m0 0 4-4m-4 4-4-4"></path>
+          <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"></path>
+        </svg>
+        <span class="label">Lưu file</span>
+      </button>
+
+      <button class="tool-btn history btn-history" title="Lịch sử &amp; danh sách file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path>
+          <path d="M3 3v5h5"></path>
+          <path d="M12 7v5l3 3"></path>
+        </svg>
+        <span class="label">Lịch sử</span>
+      </button>
+
+      <button class="tool-btn trash btn-trash" title="Xoá toàn bộ script">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 7h16M9 7V4h6v3"></path>
+          <path d="M6 7l1 13h10l1-13"></path>
+          <path d="M10 11v6M14 11v6"></path>
+        </svg>
+        <span class="label">Xoá</span>
+      </button>
+    </div>
+
+    <div class="editor-wrap">
+      <textarea class="code-textarea"></textarea>
+    </div>
+
+    <div class="panel">
+      <div class="tabs">
+        <div class="tab active" data-tab="output">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>
+          Output
+        </div>
+        <div class="tab" data-tab="problems">
+          Problems <span class="badge problem-badge">0</span>
+        </div>
+        <div class="tab-indicator"></div>
+      </div>
+      <div class="panel-body">
+        <div class="view active view-output">
+          <div class="placeholder">Nhấn "Chạy" để thực thi script bên trên…</div>
+        </div>
+        <div class="view view-problems">
+          <div class="placeholder">Chưa phát hiện lỗi nào. Nhấn "Debug" để kiểm tra.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="statusbar">
+      <div><span class="status-dot"></span>Python 3 (mô phỏng trên trình duyệt)</div>
+      <div class="right">
+        <span class="line-col-info">Dòng 1, Cột 1</span>
+        <span class="char-count">0 ký tự</span>
+      </div>
+    </div>
+  </div>
+</template>
+
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal" id="modalBox">
+    <h3>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ff6b6b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg>
+      <span id="modalTitle">Xoá toàn bộ script?</span>
+    </h3>
+    <p id="modalMessage">Toàn bộ nội dung code hiện tại sẽ bị xoá vĩnh viễn và không thể hoàn tác. Bạn có chắc chắn muốn tiếp tục?</p>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="btnCancelTrash">Huỷ</button>
+      <button class="btn-confirm" id="btnConfirmTrash">Xoá hết</button>
+    </div>
+  </div>
+</div>
+
+<div class="drawer-backdrop" id="drawerBackdrop">
+  <div class="drawer" id="drawerBox">
+    <div class="drawer-head">
+      <h3>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 3"/></svg>
+        Lịch sử file
+      </h3>
+      <button class="drawer-close" id="btnCloseDrawer" title="Đóng">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <button class="new-file-btn" id="btnNewFile">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+      Tệp mới
+    </button>
+    <div class="file-list" id="fileList">
+      <div class="placeholder" id="fileListPlaceholder">Chưa có file nào được lưu. Nhấn "Lưu file" để lưu file đầu tiên.</div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+  <span id="toastText">Đã lưu</span>
+</div>
+
+<script>
+const DEFAULT_CODE = `name = input("Nhập tên của bạn: ")\nprint(f"Xin chào {name}!")`
+
+/* ---------- Persistent storage helpers ---------- */
+async function getIndex(){
+  try{
+    const r = await window.storage.get('py-file-index', false);
+    return r && r.value ? JSON.parse(r.value) : [];
+  } catch(e){ return []; }
+}
+async function setIndex(list){
+  try{ await window.storage.set('py-file-index', JSON.stringify(list), false); } catch(e){}
+}
+async function getFileContent(id){
+  try{
+    const r = await window.storage.get('py-file:' + id, false);
+    return r ? r.value : '';
+  } catch(e){ return ''; }
+}
+async function setFileContent(id, content){
+  try{ await window.storage.set('py-file:' + id, content, false); } catch(e){}
+}
+async function removeFileContent(id){
+  try{ await window.storage.delete('py-file:' + id, false); } catch(e){}
+}
+function newId(){ return 'f' + Date.now() + Math.random().toString(36).slice(2,7); }
+
+function sanitizeFullName(n){
+  let v = (n || '').replace(/[\\/:*?"<>|]/g,'').trim();
+  v = v.slice(0,80);
+  if (!v) v = 'script.py';
+  if (!/\.[A-Za-z0-9]+$/.test(v)) v += '.py';
+  return v;
+}
+function guessMime(filename){
+  const ext = (filename.split('.').pop() || '').toLowerCase();
+  const map = {
+    py:'text/x-python', js:'text/javascript', mjs:'text/javascript', ts:'text/typescript',
+    json:'application/json', html:'text/html', htm:'text/html', css:'text/css',
+    md:'text/markdown', txt:'text/plain', csv:'text/csv', xml:'application/xml',
+    java:'text/x-java-source', c:'text/x-csrc', cpp:'text/x-c++src', h:'text/x-chdr',
+    sh:'application/x-sh', yml:'text/yaml', yaml:'text/yaml', sql:'application/sql'
+  };
+  return map[ext] || 'text/plain';
+}
+function timeAgo(ts){
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 5) return 'vừa xong';
+  if (s < 60) return `${s} giây trước`;
+  const m = Math.floor(s/60); if (m < 60) return `${m} phút trước`;
+  const h = Math.floor(m/60); if (h < 24) return `${h} giờ trước`;
+  const d = Math.floor(h/24); return `${d} ngày trước`;
+}
+
+function createFallbackEditor(textarea){
+  textarea.spellcheck = false;
+  const listeners = { change: [], cursorActivity: [] };
+  const fire = (evt) => (listeners[evt] || []).forEach(fn => fn());
+  textarea.addEventListener('input', () => { fire('change'); fire('cursorActivity'); });
+  textarea.addEventListener('keyup', () => fire('cursorActivity'));
+  textarea.addEventListener('click', () => fire('cursorActivity'));
+
+  function posFromIndex(idx){
+    const parts = textarea.value.slice(0, idx).split('\n');
+    return { line: parts.length - 1, ch: parts[parts.length - 1].length };
+  }
+  function indexFromPos(pos){
+    const lines = textarea.value.split('\n');
+    let idx = 0;
+    for (let i = 0; i < pos.line; i++) idx += lines[i].length + 1;
+    return idx + pos.ch;
+  }
+
+  return {
+    getValue: () => textarea.value,
+    setValue: (v) => { textarea.value = v; fire('change'); fire('cursorActivity'); },
+    focus: () => textarea.focus(),
+    execCommand: (cmd) => { if (cmd === 'selectAll'){ textarea.focus(); textarea.select(); } },
+    on: (evt, cb) => { if (listeners[evt]) listeners[evt].push(cb); },
+    getCursor: () => posFromIndex(textarea.selectionStart),
+    setCursor: (pos) => { const idx = indexFromPos(pos); textarea.focus(); textarea.setSelectionRange(idx, idx); },
+    getLine: (n) => (textarea.value.split('\n')[n] || ''),
+    lastLine: () => textarea.value.split('\n').length - 1,
+    getScrollInfo: () => ({ top: textarea.scrollTop }),
+    scrollTo: (x, y) => { if (y != null) textarea.scrollTop = y; },
+    scrollIntoView: (pos) => { const idx = indexFromPos(pos); textarea.focus(); textarea.setSelectionRange(idx, idx); },
+    markText: () => ({ clear(){} })
+  };
+}
+
+/* ---------- Python transpiler & runner + input() implementation ---------- */
+function transpile(src){
+  const lines = src.replace(/\r\n/g,'\n').split('\n');
+  const out = [];
+  const stack = [-1];
+
+  function indentOf(line){
+    const m = line.match(/^[ \t]*/)[0];
+    return m.replace(/\t/g,'    ').length;
+  }
+
+  function convertHeader(body){
+    let s = body;
+    s = s.replace(/^elif\b/, 'else if');
+    s = s.replace(/\bis\s+not\b/g, '!==').replace(/\bis\b/g, '===');
+    s = s.replace(/\bTrue\b/g,'true').replace(/\bFalse\b/g,'false').replace(/\bNone\b/g,'null');
+    s = s.replace(/\band\b/g,'&&').replace(/\bor\b/g,'||').replace(/\bnot\s+/g,'!');
+    let m = s.match(/^for\s+([A-Za-z_]\w*)\s+in\s+range\(([^)]*)\)\s*:$/);
+    if (m){
+      const v = m[1];
+      const args = m[2].split(',').map(x=>x.trim());
+      let a='0', b, c='1';
+      if (args.length===1){ b = args[0]; }
+      else if (args.length===2){ a = args[0]; b = args[1]; }
+      else { a = args[0]; b = args[1]; c = args[2]; }
+      return `for (var ${v} = ${a}; ${c.trim().startsWith('-') ? `${v} > ${b}` : `${v} < ${b}`}; ${v} += (${c})) {`;
+    }
+    m = s.match(/^for\s+([A-Za-z_]\w*)\s+in\s+(.+):$/);
+    if (m){ return `for (var ${m[1]} of (${m[2]})) {`; }
+    m = s.match(/^def\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*:$/);
+    if (m){ return `function ${m[1]}(${m[2]}) {`; }
+    m = s.match(/^(if|else if|while)\s*(.+):$/);
+    if (m){ return `${m[1]} (${m[2]}) {`; }
+    if (/^else\s*:$/.test(s)) return 'else {';
+    if (/^try\s*:$/.test(s)) return 'try {';
+    if (/^finally\s*:$/.test(s)) return 'finally {';
+    m = s.match(/^except(\s+.+)?:$/);
+    if (m){ return 'catch (__e) {'; }
+    return s;
+  }
+
+  function convertStatement(s){
+    let line = s;
+    line = line.replace(/f(["'])((?:(?!\1).)*)\1/g, (whole, q, inner) => {
+      const tpl = inner.replace(/\{([^{}]+)\}/g, (a,expr) => '${' + expr + '}');
+      return '`' + tpl.replace(/`/g,'\\`') + '`';
+    });
+    line = line.replace(/\bis\s+not\b/g, '!==').replace(/\bis\b/g, '===');
+    line = line.replace(/\bTrue\b/g,'true').replace(/\bFalse\b/g,'false').replace(/\bNone\b/g,'null');
+    line = line.replace(/\band\b/g,'&&').replace(/\bor\b/g,'||').replace(/\bnot\s+/g,'!');
+    line = line.replace(/\bprint\s*\(/g, '__print__(');
+    // Hỗ trợ Python input() bằng cách convert sang hàm trung gian
+    line = line.replace(/\binput\s*\(/g, '__input__(');
+    line = line.replace(/\blen\s*\(/g, '__len__(');
+    line = line.replace(/\bstr\s*\(/g, '__str__(');
+    line = line.replace(/\bint\s*\(/g, '__int__(');
+    line = line.replace(/\bfloat\s*\(/g, '__float__(');
+    line = line.replace(/\brange\s*\(/g, '__range__(');
+    line = line.replace(/\babs\s*\(/g, '__abs__(');
+    line = line.replace(/\bround\s*\(/g, '__round__(');
+    line = line.replace(/\bsum\s*\(/g, '__sum__(');
+    line = line.replace(/\bmin\s*\(/g, '__min__(');
+    line = line.replace(/\bmax\s*\(/g, '__max__(');
+    line = line.replace(/\bsorted\s*\(/g, '__sorted__(');
+    line = line.replace(/\blist\s*\(/g, '__list__(');
+    line = line.replace(/\bbool\s*\(/g, '__bool__(');
+    line = line.replace(/\*\*/g, '__POW__');
+    line = line.replace(/^pass\s*$/, '/* pass */');
+    const asg = line.match(/^([A-Za-z_]\w*)\s*(\+=|-=|\*=|\/=|=)(?!=)\s*(.+)$/);
+    if (asg && !/^(if|for|while|return|function)/.test(line)){
+      line = `var ${asg[1]} ${asg[2]} ${asg[3]}`;
+    }
+    line = line.replace(/__POW__/g, () => '');
+    return line;
+  }
+
+  for (let i=0;i<lines.length;i++){
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed.startsWith('#')){
+      out.push('');
+      continue;
+    }
+    const ind = indentOf(raw);
+    while (stack.length>1 && ind <= stack[stack.length-1]){
+      stack.pop();
+      out.push('}');
+    }
+    let body = trimmed.replace(/#.*$/, '').trim();
+    if (/:$/.test(body) && /^(if|elif|else|for|while|def|try|except|finally)\b/.test(body)){
+      const header = convertHeader(body);
+      out.push(header + ` // L${i+1}`);
+      stack.push(ind);
+    } else {
+      let stmt = convertStatement(body);
+      stmt = stmt.replace(/\*\*/g, '');
+      out.push(stmt + `; // L${i+1}`);
+    }
+  }
+  while (stack.length>1){ stack.pop(); out.push('}'); }
+  return out.join('\n');
+}
+
+function runCode(editorInst){
+  const src = editorInst.getValue();
+  const printed = [];
+  const helpers = {
+    __print__: (...args) => printed.push(args.map(a => stringify(a)).join(' ')),
+    __input__: (promptText) => {
+      // Gọi hộp thoại hệ thống để mô phỏng Python input()
+      const val = prompt(promptText || "") || "";
+      printed.push((promptText || "") + val);
+      return val;
+    },
+    __len__: (x) => x.length,
+    __str__: (x) => String(x),
+    __int__: (x) => parseInt(x, 10),
+    __float__: (x) => parseFloat(x),
+    __range__: function(a,b,c){
+      if (b===undefined){ b=a; a=0; }
+      if (c===undefined) c=1;
+      const r=[]; if(c>0){for(let i=a;i<b;i+=c) r.push(i);} else {for(let i=a;i>b;i+=c) r.push(i);}
+      return r;
+    },
+    __abs__: (x) => Math.abs(x),
+    __round__: (x, n) => { const f = Math.pow(10, n||0); return Math.round(x*f)/f; },
+    __sum__: (arr) => arr.reduce((a,b)=>a+b, 0),
+    __min__: (...args) => Array.isArray(args[0]) && args.length===1 ? Math.min(...args[0]) : Math.min(...args),
+    __max__: (...args) => Array.isArray(args[0]) && args.length===1 ? Math.max(...args[0]) : Math.max(...args),
+    __sorted__: (arr) => [...arr].sort((a,b)=> a>b?1:(a<b?-1:0)),
+    __list__: (x) => Array.isArray(x) ? [...x] : (typeof x==='string' ? x.split('') : Array.from(x)),
+    __bool__: (x) => Boolean(x) && !(Array.isArray(x) && x.length===0)
+  };
+  function stringify(v){
+    if (Array.isArray(v)) return '[' + v.map(stringify).join(', ') + ']';
+    if (v === null) return 'None';
+    if (v === true) return 'True';
+    if (v === false) return 'False';
+    if (typeof v === 'object') return JSON.stringify(v);
+    return String(v);
+  }
+
+  let jsCode;
+  try{
+    jsCode = transpile(src);
+  } catch(e){
+    return { ok:false, error: 'Lỗi chuyển đổi cú pháp: ' + e.message, line:null, output: printed };
+  }
+
+  try {
+    const fn = new Function(
+      '__print__','__input__','__len__','__str__','__int__','__float__','__range__',
+      '__abs__','__round__','__sum__','__min__','__max__','__sorted__','__list__','__bool__',
+      `"use strict";\n${jsCode}`);
+    fn(
+      helpers.__print__, helpers.__input__, helpers.__len__, helpers.__str__, helpers.__int__, helpers.__float__, helpers.__range__,
+      helpers.__abs__, helpers.__round__, helpers.__sum__, helpers.__min__, helpers.__max__, helpers.__sorted__, helpers.__list__, helpers.__bool__
+    );
+    return { ok:true, output: printed };
+  } catch(e){
+    let line = null;
+    const stackStr = (e.stack || '') + '';
+    const m = stackStr.match(/<anonymous>:(\d+):/);
+    if (m){
+      const jsLineNum = parseInt(m[1],10) - 2;
+      const jsLines = jsCode.split('\n');
+      const target = jsLines[jsLineNum-1] || '';
+      const lm = target.match(/\/\/ L(\d+)/);
+      if (lm) line = parseInt(lm[1],10);
+    }
+    return { ok:false, error: e.message, line, output: printed };
+  }
+}
+
+function staticChecks(src){
+  const problems = [];
+  const lines = src.replace(/\r\n/g,'\n').split('\n');
+  const pairs = {'(' : ')', '[':']', '{':'}'};
+  const stack = [];
+  lines.forEach((raw, idx) => {
+    const line = raw.replace(/#.*/,'');
+    for (const ch of line){
+      if ('([{'.includes(ch)) stack.push({ch, line: idx+1});
+      if (')]}'.includes(ch)){
+        const last = stack.pop();
+        if (!last || pairs[last.ch] !== ch){
+          problems.push({type:'error', line:idx+1, msg:`Dấu ngoặc không khớp gần "${ch}"`});
+        }
+      }
+    }
+    const singleQuotes = (line.match(/'/g)||[]).length;
+    const doubleQuotes = (line.match(/"/g)||[]).length;
+    if (singleQuotes % 2 !== 0) problems.push({type:'error', line:idx+1, msg:`Thiếu dấu nháy đơn (') để đóng chuỗi`});
+    if (doubleQuotes % 2 !== 0) problems.push({type:'error', line:idx+1, msg:`Thiếu dấu nháy kép (") để đóng chuỗi`});
+
+    const trimmed = raw.trim();
+    if (/^(if|elif|else|for|while|def|try|except|finally)\b/.test(trimmed) && !trimmed.endsWith(':') && !trimmed.includes('#')){
+      problems.push({type:'error', line:idx+1, msg:`Thiếu dấu hai chấm (:) ở cuối câu lệnh`});
+    }
+    if (/\t/.test(raw)){
+      problems.push({type:'warn', line:idx+1, msg:`Dòng dùng ký tự Tab để thụt lề — nên dùng dấu cách để tránh lỗi thụt lề`});
+    }
+  });
+  while (stack.length){
+    const last = stack.pop();
+    problems.push({type:'error', line:last.line, msg:`Dấu "${last.ch}" chưa được đóng`});
+  }
+  return problems;
+}
+
+/* ---------- Toast ---------- */
+function showToast(msg){
+  const toast = document.getElementById('toast');
+  document.getElementById('toastText').textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => toast.classList.remove('show'), 2200);
+}
+
+/* ---------- Modal ---------- */
+const modalBackdrop = document.getElementById('modalBackdrop');
+const modalBox = document.getElementById('modalBox');
+const modalTitle = document.getElementById('modalTitle');
+const modalMessage = document.getElementById('modalMessage');
+const btnConfirmTrash = document.getElementById('btnConfirmTrash');
+let pendingConfirmAction = null;
+
+function openConfirm(originEl, {title, message, confirmLabel}, onConfirm){
+  const rect = originEl.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  modalBox.style.setProperty('--ox', ((rect.left+rect.width/2)/vw*100) + '%');
+  modalBox.style.setProperty('--oy', ((rect.top+rect.height/2)/vh*100) + '%');
+  modalTitle.textContent = title;
+  modalMessage.textContent = message;
+  btnConfirmTrash.textContent = confirmLabel || 'Xoá hết';
+  pendingConfirmAction = onConfirm;
+  modalBackdrop.classList.add('show');
+}
+function closeModal(){ modalBackdrop.classList.remove('show'); pendingConfirmAction = null; }
+document.getElementById('btnCancelTrash').addEventListener('click', closeModal);
+modalBackdrop.addEventListener('click', (e) => { if (e.target === modalBackdrop) closeModal(); });
+btnConfirmTrash.addEventListener('click', () => {
+  const action = pendingConfirmAction;
+  closeModal();
+  if (action) action();
+});
+
+/* ---------- Drawer ---------- */
+const drawerBackdrop = document.getElementById('drawerBackdrop');
+const fileListEl = document.getElementById('fileList');
+let drawerOwner = null;
+
+function openDrawer(win){
+  drawerOwner = win;
+  drawerBackdrop.classList.add('show');
+  renderFileList();
+}
+document.getElementById('btnCloseDrawer').addEventListener('click', () => drawerBackdrop.classList.remove('show'));
+drawerBackdrop.addEventListener('click', (e) => { if (e.target === drawerBackdrop) drawerBackdrop.classList.remove('show'); });
+
+document.getElementById('btnNewFile').addEventListener('click', () => {
+  const win = drawerOwner;
+  if (!win) return;
+  win.currentFileId = null;
+  win.currentFileName = 'script.py';
+  win.root.querySelector('.filename-text').textContent = win.currentFileName;
+  win.editor.setValue('');
+  win.editor.focus();
+  win.dirty = false;
+  win.root.querySelector('.dot-unsaved').classList.remove('show');
+  clearProblemMarks(win);
+  renderProblems(win, []);
+  win.root.querySelector('.view-output').innerHTML = '<div class="placeholder">Nhấn "Chạy" để thực thi script bên trên…</div>';
+  drawerBackdrop.classList.remove('show');
+  updateTaskbarButton(win);
+  showToast('Đã tạo tệp mới — nhấn "Lưu file" để lưu lại');
+});
+
+async function renderFileList(){
+  const win = drawerOwner;
+  const index = await getIndex();
+  const placeholder = document.getElementById('fileListPlaceholder');
+  fileListEl.innerHTML = '';
+  if (!index.length){
+    fileListEl.appendChild(placeholder);
+    return;
+  }
+  const sorted = [...index].sort((a,b) => b.updatedAt - a.updatedAt);
+  sorted.forEach(entry => {
+    const item = document.createElement('div');
+    item.className = 'file-item' + (win && entry.id === win.currentFileId ? ' current' : '');
+    item.innerHTML = `
+      <div class="file-item-top">
+        <div class="file-item-name">
+          <span class="txt">${entry.name}</span>
+          ${win && entry.id === win.currentFileId ? '<span class="cur-badge">Đang mở</span>' : ''}
+        </div>
+      </div>
+      <div class="file-item-time">Lưu ${timeAgo(entry.updatedAt)}</div>
+      <div class="file-item-actions">
+        <button class="fa-open" title="Mở file này">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6M12 19h8"/></svg>
+        </button>
+        <button class="fa-rename" title="Đổi tên / định dạng">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        </button>
+        <button class="fa-download" title="Tải xuống máy">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11m0 0 4-4m-4 4-4-4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+        </button>
+        <button class="fa-delete" title="Xoá file">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg>
+        </button>
+      </div>
+    `;
+
+    item.querySelector('.fa-open').addEventListener('click', async () => {
+      if (!win) return;
+      const content = await getFileContent(entry.id);
+      win.currentFileId = entry.id;
+      win.currentFileName = entry.name;
+      win.root.querySelector('.filename-text').textContent = entry.name;
+      win.editor.setValue(content || '');
+      win.editor.focus();
+      win.dirty = false;
+      win.root.querySelector('.dot-unsaved').classList.remove('show');
+      clearProblemMarks(win);
+      renderProblems(win, []);
+      win.root.querySelector('.view-output').innerHTML = '<div class="placeholder">Nhấn "Chạy" để thực thi script bên trên…</div>';
+      drawerBackdrop.classList.remove('show');
+      updateTaskbarButton(win);
+      showToast(`Đã mở "${entry.name}"`);
+    });
+
+    item.querySelector('.fa-rename').addEventListener('click', () => {
+      const nameEl = item.querySelector('.file-item-name');
+      const oldHtml = nameEl.innerHTML;
+      nameEl.innerHTML = `<input class="file-rename-input" value="${entry.name}">`;
+      const input = nameEl.querySelector('input');
+      input.focus(); input.select();
+      const commit = async () => {
+        const val = sanitizeFullName(input.value);
+        if (val && val !== entry.name){
+          entry.name = val;
+          await setIndex(index);
+          if (win && entry.id === win.currentFileId){
+            win.currentFileName = val;
+            win.root.querySelector('.filename-text').textContent = val;
+            updateTaskbarButton(win);
+          }
+          showToast(`Đã đổi tên thành "${val}"`);
+        }
+        renderFileList();
+      };
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') input.blur();
+        if (e.key === 'Escape'){ nameEl.innerHTML = oldHtml; }
+      });
+      input.addEventListener('blur', commit);
+    });
+
+    item.querySelector('.fa-download').addEventListener('click', async () => {
+      const content = await getFileContent(entry.id);
+      await saveContentToDisk(entry.name, content);
+    });
+
+    item.querySelector('.fa-delete').addEventListener('click', () => {
+      openConfirm(item.querySelector('.fa-delete'), {
+        title: `Xoá "${entry.name}"?`,
+        message: 'File này sẽ bị xoá vĩnh viễn khỏi lịch sử và không thể khôi phục.',
+        confirmLabel: 'Xoá file'
+      }, async () => {
+        const idx = await getIndex();
+        const next = idx.filter(f => f.id !== entry.id);
+        await setIndex(next);
+        await removeFileContent(entry.id);
+        if (win && entry.id === win.currentFileId){
+          win.currentFileId = null;
+          win.currentFileName = 'script.py';
+          win.root.querySelector('.filename-text').textContent = win.currentFileName;
+          updateTaskbarButton(win);
+        }
+        showToast(`Đã xoá "${entry.name}"`);
+        renderFileList();
+      });
+    });
+
+    fileListEl.appendChild(item);
+  });
+}
+
+async function saveContentToDisk(filename, content){
+  const mime = guessMime(filename);
+  if (window.showSaveFilePicker){
+    try{
+      const ext = '.' + (filename.split('.').pop() || 'txt');
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{ description: 'Tệp', accept: { [mime]: [ext] } }]
+      });
+      const writable = await handle.createWritable();
+      await writable.write(content);
+      await writable.close();
+      showToast(`Đã lưu "${filename}"`);
+      return true;
+    } catch(e){
+      if (e && e.name === 'AbortError') return false;
+    }
+  }
+  const blob = new Blob([content], {type: mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast(`Đã tải "${filename}" xuống (thư mục Downloads)`);
+  return true;
+}
+
+async function persistSave(win){
+  const content = win.editor.getValue();
+  let index = await getIndex();
+  if (!win.currentFileId){
+    win.currentFileId = newId();
+    index.unshift({ id: win.currentFileId, name: win.currentFileName, updatedAt: Date.now() });
+  } else {
+    const entry = index.find(f => f.id === win.currentFileId);
+    if (entry){ entry.updatedAt = Date.now(); entry.name = win.currentFileName; }
+    else index.unshift({ id: win.currentFileId, name: win.currentFileName, updatedAt: Date.now() });
+  }
+  await setFileContent(win.currentFileId, content);
+  await setIndex(index);
+  win.dirty = false;
+  win.root.querySelector('.dot-unsaved').classList.remove('show');
+  if (drawerBackdrop.classList.contains('show') && drawerOwner === win) renderFileList();
+}
+
+/* ---------- Windows status updates ---------- */
+function updateStatus(win){
+  const cur = win.editor.getCursor();
+  win.root.querySelector('.line-col-info').textContent = `Dòng ${cur.line+1}, Cột ${cur.ch+1}`;
+  win.root.querySelector('.char-count').textContent = `${win.editor.getValue().length} ký tự`;
+}
+function clearProblemMarks(win){
+  win.problemMarks.forEach(m => m.clear());
+  win.problemMarks = [];
+}
+function markProblemLine(win, lineNum){
+  win.problemMarks.push(win.editor.markText(
+    {line:lineNum-1, ch:0}, {line:lineNum-1, ch: win.editor.getLine(lineNum-1)?.length || 0},
+    {className:'cm-problem-line'}
+  ));
+}
+function renderOutput(win, result){
+  const view = win.root.querySelector('.view-output');
+  view.innerHTML = '';
+  if (result.output.length){
+    result.output.forEach(line => {
+      const d = document.createElement('div');
+      d.className = 'out-line';
+      d.textContent = line;
+      view.appendChild(d);
+    });
+  } else {
+    view.innerHTML = '<div class="placeholder">(Không có output nào được in ra)</div>';
+  }
+}
+function renderProblems(win, problems, successMessage){
+  const view = win.root.querySelector('.view-problems');
+  const badge = win.root.querySelector('.problem-badge');
+  clearProblemMarks(win);
+  view.innerHTML = '';
+  if (!problems.length){
+    view.innerHTML = `<div class="out-line ok">✓ ${successMessage || 'Không phát hiện lỗi nào.'}</div>`;
+    badge.textContent = '0';
+    badge.classList.remove('show');
+    return;
+  }
+  badge.textContent = String(problems.length);
+  badge.classList.add('show');
+  problems.forEach(p => {
+    const item = document.createElement('div');
+    item.className = 'problem-item';
+    const iconSvg = p.type === 'error'
+      ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>'
+      : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg>';
+    item.innerHTML = `<span class="problem-icon ${p.type}">${iconSvg}</span>
+      <div class="problem-text"><b>${p.type === 'error' ? 'Lỗi' : 'Cảnh báo'}:</b> ${p.msg}<br><span class="problem-loc">Dòng ${p.line}</span></div>`;
+    item.addEventListener('click', () => {
+      win.editor.setCursor({line:p.line-1, ch:0});
+      win.editor.focus();
+      win.editor.scrollIntoView({line:p.line-1, ch:0}, 100);
+    });
+    view.appendChild(item);
+    markProblemLine(win, p.line);
+  });
+}
+function withLoading(btn, fn){
+  btn.classList.add('loading');
+  setTimeout(() => {
+    fn();
+    btn.classList.remove('loading');
+  }, 380);
+}
+
+/* ---------- Windows & Taskbar Manager ---------- */
+const desktop = document.getElementById('desktop');
+const taskbarWinsEl = document.getElementById('taskbarWins');
+const winTemplate = document.getElementById('winTemplate');
+const windows = [];
+let zTop = 10;
+let winSeq = 0;
+let focusedWin = null;
+
+function createTaskbarButton(win){
+  const btn = document.createElement('button');
+  btn.className = 'taskbar-win-btn';
+  const dot = document.createElement('span'); dot.className = 'dot';
+  const txt = document.createElement('span'); txt.className = 'txt';
+  btn.appendChild(dot); btn.appendChild(txt);
+  btn.addEventListener('click', () => {
+    if (win.root.classList.contains('minimized')){
+      restoreWindow(win);
+    } else if (win === focusedWin){
+      minimizeWindow(win);
+    } else {
+      bringToFront(win);
+    }
+  });
+  taskbarWinsEl.appendChild(btn);
+  win.taskbarBtn = btn;
+  updateTaskbarButton(win);
+}
+function updateTaskbarButton(win){
+  if (!win.taskbarBtn) return;
+  const isMin = win.root.classList.contains('minimized');
+  win.taskbarBtn.classList.toggle('minimized', isMin);
+  win.taskbarBtn.classList.toggle('active', !isMin && win === focusedWin);
+  win.taskbarBtn.querySelector('.txt').textContent = win.currentFileName;
+  win.taskbarBtn.title = win.currentFileName;
+}
+function refreshAllTaskbarButtons(){ windows.forEach(updateTaskbarButton); }
+function removeTaskbarButton(win){
+  if (win.taskbarBtn){ win.taskbarBtn.remove(); win.taskbarBtn = null; }
+}
+
+function bringToFront(win){
+  if (win.root.classList.contains('maximized')){
+    win.root.style.zIndex = 350;
+  } else {
+    zTop += 1;
+    win.root.style.zIndex = zTop;
+  }
+  focusedWin = win;
+  refreshAllTaskbarButtons();
+}
+
+function computeGenieOffset(win){
+  const wr = win.root.getBoundingClientRect();
+  const br = win.taskbarBtn ? win.taskbarBtn.getBoundingClientRect()
+    : { left: wr.left + wr.width/2 - 5, top: window.innerHeight - 10, width: 10, height: 10 };
+  const gx = (br.left + br.width/2) - (wr.left + wr.width/2);
+  const gy = (br.top + br.height/2) - (wr.top + wr.height/2);
+  const originXPct = Math.min(100, Math.max(0, ((br.left + br.width/2 - wr.left) / Math.max(1,wr.width)) * 100));
+  return { gx, gy, originXPct };
+}
+
+function closeWindow(win){
+  if (win.root.classList.contains('closing')) return;
+  win.root.classList.add('closing');
+  win.root.style.zIndex = 9999;
+  win.root.addEventListener('animationend', function onEnd(){
+    win.root.removeEventListener('animationend', onEnd);
+    const idx = windows.indexOf(win);
+    if (idx > -1) windows.splice(idx, 1);
+    win.root.remove();
+    removeTaskbarButton(win);
+    if (drawerOwner === win){ drawerOwner = null; drawerBackdrop.classList.remove('show'); }
+    if (focusedWin === win) focusedWin = windows[windows.length - 1] || null;
+    refreshAllTaskbarButtons();
+  }, { once:true });
+}
+
+function minimizeWindow(win){
+  if (win.root.classList.contains('minimized') || win.root.classList.contains('genie-out') || win.root.classList.contains('genie-in')) return;
+  const { gx, gy, originXPct } = computeGenieOffset(win);
+  win.root.style.setProperty('--gx', gx + 'px');
+  win.root.style.setProperty('--gy', gy + 'px');
+  win.root.style.transformOrigin = originXPct + '% 100%';
+  win.root.classList.add('genie-out');
+  if (focusedWin === win) focusedWin = null;
+  refreshAllTaskbarButtons();
+  win.root.addEventListener('animationend', function onEnd(){
+    win.root.removeEventListener('animationend', onEnd);
+    win.root.classList.remove('genie-out');
+    win.root.classList.add('minimized');
+    win.root.style.transform = '';
+  }, { once:true });
+}
+
+function restoreWindow(win){
+  if (!win.root.classList.contains('minimized') || win.root.classList.contains('genie-out') || win.root.classList.contains('genie-in')) return;
+  win.root.classList.remove('minimized');
+  const { gx, gy, originXPct } = computeGenieOffset(win);
+  win.root.style.setProperty('--gx', gx + 'px');
+  win.root.style.setProperty('--gy', gy + 'px');
+  win.root.style.transformOrigin = originXPct + '% 100%';
+  win.root.classList.add('genie-in');
+  bringToFront(win);
+  win.root.addEventListener('animationend', function onEnd(){
+    win.root.removeEventListener('animationend', onEnd);
+    win.root.classList.remove('genie-in');
+    win.root.style.transform = '';
+  }, { once:true });
+}
+
+/* Sửa phóng to (màu xanh lá): Full màn hình thực tế */
+function toggleMaximize(win){
+  const root = win.root;
+  if (!root.classList.contains('maximized')){
+    win.prevRect = { 
+      left: root.style.left, 
+      top: root.style.top,
+      width: root.style.width,
+      height: root.style.height
+    };
+    root.classList.add('maximized');
+    root.style.transform = "none";
+  } else {
+    root.classList.remove('maximized');
+    if (win.prevRect){
+      root.style.left = win.prevRect.left;
+      root.style.top = win.prevRect.top;
+      root.style.width = win.prevRect.width;
+      root.style.height = win.prevRect.height;
+    }
+    bringToFront(win);
+  }
+  focusedWin = win;
+  refreshAllTaskbarButtons();
+  setTimeout(() => { if (win.editor && win.editor.refresh) win.editor.refresh(); }, 60);
+}
+
+/* ---------- Jelly/Wobbly Drag Window Animation (Kubuntu Style) ---------- */
+function enableDrag(win){
+  const root = win.root;
+  const titlebar = root.querySelector('.titlebar');
+  
+  let dragging = false;
+  let startX = 0, startY = 0;
+  let startLeft = 0, startTop = 0;
+  
+  // Các biến tính toán vật lý đàn hồi Jelly
+  let lastX = 0, lastY = 0;
+  let vx = 0, vy = 0;
+  let currentSkewX = 0, currentSkewY = 0;
+  let rafId = null;
+
+  function isDragBlocked(target){
+    return target.closest('.dots') || target.closest('.rename-btn') || target.closest('.filename-input');
+  }
+
+  function startDrag(clientX, clientY, target){
+    if (isDragBlocked(target)) return;
+    if (root.classList.contains('maximized')) return;
+    
+    dragging = true;
+    bringToFront(win);
+    
+    startX = clientX; 
+    startY = clientY;
+    
+    const rect = root.getBoundingClientRect();
+    startLeft = rect.left; 
+    startTop = rect.top;
+    
+    lastX = clientX;
+    lastY = clientY;
+    vx = 0;
+    vy = 0;
+
+    root.classList.add('dragging');
+    
+    // Bắt đầu vòng lặp hiệu ứng Jelly mượt mà
+    if (!rafId) {
+      rafId = requestAnimationFrame(updateJellyAnimation);
+    }
+  }
+
+  function moveDrag(clientX, clientY){
+    if (!dragging) return;
+    
+    const dx = clientX - startX;
+    const dy = clientY - startY;
+    
+    let newTop = startTop + dy;
+    let newLeft = startLeft + dx;
+    
+    // Giới hạn biên màn hình
+    newTop = Math.max(-8, Math.min(newTop, window.innerHeight - 80));
+    newLeft = Math.max(-100, Math.min(newLeft, window.innerWidth - 100));
+    
+    root.style.left = newLeft + 'px';
+    root.style.top = newTop + 'px';
+
+    // Đo tốc độ di chuyển để áp độ nghiêng Jelly
+    vx = clientX - lastX;
+    vy = clientY - lastY;
+    
+    lastX = clientX;
+    lastY = clientY;
+  }
+
+  function endDrag(){
+    if (!dragging) return;
+    dragging = false;
+    root.classList.remove('dragging');
+  }
+
+  // Hàm nội suy đàn hồi (spring-mass damper) mô phỏng Kubuntu
+  function updateJellyAnimation(){
+    if (!dragging) {
+      // Khi nhấc chuột, đưa cửa sổ từ từ trở lại bình thường (trả về 0)
+      vx *= 0.85; 
+      vy *= 0.85;
+    }
+    
+    // Chuyển tốc độ kéo thành độ nghiêng (Skew) và co giãn nhẹ (Scale)
+    // Giới hạn mức độ kéo lệch tối đa (Clamp) để hiệu ứng tự nhiên, không bị vỡ giao diện
+    const targetSkewX = Math.max(-15, Math.min(15, vx * 0.45));
+    const targetSkewY = Math.max(-15, Math.min(15, vy * 0.35));
+
+    // Tính nội suy mượt mà
+    currentSkewX += (targetSkewX - currentSkewX) * 0.25;
+    currentSkewY += (targetSkewY - currentSkewY) * 0.25;
+
+    if (root.classList.contains('maximized')) {
+      root.style.transform = 'none';
+    } else {
+      // Áp dụng ma trận biến đổi 2D kéo dẻo
+      root.style.transform = `skew(${currentSkewX}deg, ${currentSkewY}deg) scale(${1 - Math.abs(currentSkewY)*0.005})`;
+    }
+
+    // Nếu chuyển động vẫn còn đủ lớn hoặc đang kéo thì tiếp tục vẽ hoạt ảnh
+    if (dragging || Math.abs(currentSkewX) > 0.05 || Math.abs(currentSkewY) > 0.05) {
+      rafId = requestAnimationFrame(updateJellyAnimation);
+    } else {
+      root.style.transform = 'none';
+      rafId = null;
+    }
+  }
+
+  titlebar.addEventListener('mousedown', (e) => { startDrag(e.clientX, e.clientY, e.target); });
+  document.addEventListener('mousemove', (e) => moveDrag(e.clientX, e.clientY));
+  document.addEventListener('mouseup', endDrag);
+
+  titlebar.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    startDrag(t.clientX, t.clientY, e.target);
+  }, { passive:true });
+  document.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    const t = e.touches[0];
+    moveDrag(t.clientX, t.clientY);
+  }, { passive:true });
+  document.addEventListener('touchend', endDrag);
+}
+
+function initWindowUI(win){
+  const root = win.root;
+  const q = sel => root.querySelector(sel);
+  const qa = sel => root.querySelectorAll(sel);
+
+  const codeArea = q('.code-textarea');
+  if (typeof CodeMirror !== 'undefined'){
+    try{
+      win.editor = CodeMirror.fromTextArea(codeArea, {
+        mode: { name: 'python', version: 3, singleLineStringErrors: false },
+        theme: 'default',
+        lineNumbers: true,
+        indentUnit: 4,
+        tabSize: 4,
+        indentWithTabs: false,
+        matchBrackets: true,
+        autoCloseBrackets: true,
+        styleActiveLine: true,
+        viewportMargin: Infinity,
+        inputStyle: 'contenteditable',
+        extraKeys: {
+          "Tab": cm => cm.replaceSelection("    "),
+          "Cmd-A": cm => cm.execCommand('selectAll'),
+          "Ctrl-A": cm => cm.execCommand('selectAll')
+        }
+      });
+    } catch(e){
+      win.editor = createFallbackEditor(codeArea);
+    }
+  } else {
+    win.editor = createFallbackEditor(codeArea);
+  }
+
+  const unsavedDot = q('.dot-unsaved');
+  const fileNameText = q('.filename-text');
+  const fileNameInput = q('.filename-input');
+  fileNameText.textContent = win.currentFileName;
+
+  win.editor.on('change', () => {
+    win.dirty = true;
+    unsavedDot.classList.add('show');
+    updateStatus(win);
+    clearProblemMarks(win);
+  });
+  win.editor.on('cursorActivity', () => updateStatus(win));
+
+  q('.rename-btn').addEventListener('click', () => {
+    fileNameInput.value = win.currentFileName;
+    fileNameText.style.display = 'none';
+    fileNameInput.style.display = 'inline-block';
+    fileNameInput.focus();
+    fileNameInput.select();
+  });
+  async function commitRename(){
+    const val = sanitizeFullName(fileNameInput.value);
+    fileNameInput.style.display = 'none';
+    fileNameText.style.display = '';
+    if (val !== win.currentFileName){
+      win.currentFileName = val;
+      fileNameText.textContent = val;
+      if (win.currentFileId){
+        const index = await getIndex();
+        const entry = index.find(f => f.id === win.currentFileId);
+        if (entry){ entry.name = val; await setIndex(index); }
+      }
+      updateTaskbarButton(win);
+      showToast(`Đã đổi tên thành "${val}"`);
+    }
+  }
+  fileNameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') fileNameInput.blur();
+    if (e.key === 'Escape'){ fileNameInput.value = win.currentFileName; fileNameInput.blur(); }
+  });
+  fileNameInput.addEventListener('blur', commitRename);
+
+  updateStatus(win);
+
+  const tabs = qa('.tab');
+  const indicator = q('.tab-indicator');
+  function positionIndicator(el){
+    if (!el) return;
+    indicator.style.left = el.offsetLeft + 'px';
+    indicator.style.width = el.offsetWidth + 'px';
+  }
+  win.activateTab = function(name){
+    tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+    q('.view-output').classList.toggle('active', name === 'output');
+    q('.view-problems').classList.toggle('active', name === 'problems');
+    positionIndicator(q(`.tab[data-tab="${name}"]`));
+  };
+  tabs.forEach(t => t.addEventListener('click', () => win.activateTab(t.dataset.tab)));
+  setTimeout(() => win.activateTab('output'), 0);
+
+  q('.btn-run').addEventListener('click', function(){
+    withLoading(this, () => {
+      win.activateTab('output');
+      const result = runCode(win.editor);
+      renderOutput(win, result);
+      const problems = result.ok ? [] : [{type:'error', line: result.line || 1, msg: 'Lỗi thực thi: ' + result.error}];
+      renderProblems(win, problems, 'Chạy xong, không có lỗi.');
+    });
+  });
+
+  q('.btn-debug').addEventListener('click', function(){
+    withLoading(this, () => {
+      win.activateTab('problems');
+      const src = win.editor.getValue();
+      const problems = staticChecks(src);
+      const result = runCode(win.editor);
+      if (!result.ok){
+        problems.push({type:'error', line: result.line || 1, msg: 'Lỗi thực thi: ' + result.error});
+      }
+      renderProblems(win, problems, 'Không phát hiện lỗi nào khi debug.');
+      renderOutput(win, result);
+    });
+  });
+
+  q('.btn-selectall').addEventListener('click', () => {
+    win.editor.focus();
+    win.editor.execCommand('selectAll');
+    showToast('Đã chọn toàn bộ code');
+  });
+
+  q('.btn-save').addEventListener('click', async function(){
+    this.classList.add('loading');
+    await persistSave(win);
+    await saveContentToDisk(win.currentFileName, win.editor.getValue());
+    this.classList.remove('loading');
+  });
+
+  q('.btn-history').addEventListener('click', () => openDrawer(win));
+
+  const btnTrash = q('.btn-trash');
+  btnTrash.addEventListener('click', () => {
+    openConfirm(btnTrash, {
+      title: 'Xoá toàn bộ script?',
+      message: 'Toàn bộ nội dung code hiện tại trong ô soạn thảo sẽ bị xoá. File đã lưu (nếu có) trong Lịch sử sẽ không bị ảnh hưởng cho tới khi bạn bấm Lưu lại.',
+      confirmLabel: 'Xoá hết'
+    }, () => {
+      win.editor.setValue('');
+      win.editor.focus();
+      clearProblemMarks(win);
+      renderProblems(win, []);
+      q('.view-output').innerHTML = '<div class="placeholder">Nhấn "Chạy" để thực thi script bên trên…</div>';
+      showToast('Đã xoá nội dung trong ô soạn thảo');
+    });
+  });
+
+  q('.dot-close').addEventListener('click', (e) => { e.stopPropagation(); closeWindow(win); });
+  q('.dot-min').addEventListener('click', (e) => { e.stopPropagation(); minimizeWindow(win); });
+  q('.dot-max').addEventListener('click', (e) => { e.stopPropagation(); toggleMaximize(win); });
+
+  qa('.tool-btn').forEach(btn => {
+    btn.addEventListener('mousemove', (e) => {
+      const r = btn.getBoundingClientRect();
+      btn.style.setProperty('--mx', ((e.clientX - r.left) / r.width * 100) + '%');
+      btn.style.setProperty('--my', ((e.clientY - r.top) / r.height * 100) + '%');
+    });
+  });
+}
+
+function createWindow(initial){
+  winSeq += 1;
+  const frag = winTemplate.content.cloneNode(true);
+  const root = frag.querySelector('.win');
+  const cascade = (windows.length % 6) * 26;
+  root.style.left = (36 + cascade) + 'px';
+  root.style.top = (36 + cascade) + 'px';
+  desktop.appendChild(root);
+
+  const win = {
+    id: 'w' + winSeq,
+    root,
+    editor: null,
+    dirty: false,
+    currentFileId: null,
+    currentFileName: (initial && initial.name) || 'script.py',
+    problemMarks: [],
+    prevRect: null,
+    taskbarBtn: null
+  };
+  windows.push(win);
+
+  initWindowUI(win);
+  enableDrag(win);
+  createTaskbarButton(win);
+
+  root.addEventListener('mousedown', () => bringToFront(win));
+
+  if (initial && typeof initial.content === 'string'){
+    win.editor.setValue(initial.content);
+  }
+
+  bringToFront(win);
+  return win;
+}
+
+document.getElementById('taskbarNewBtn').addEventListener('click', () => {
+  createWindow({ name: 'script.py', content: '' });
+});
+
+(async function bootstrap(){
+  const win = createWindow({});
+  const index = await getIndex();
+  if (index.length){
+    const latest = [...index].sort((a,b)=>b.updatedAt-a.updatedAt)[0];
+    const content = await getFileContent(latest.id);
+    win.currentFileId = latest.id;
+    win.currentFileName = latest.name;
+    win.root.querySelector('.filename-text').textContent = latest.name;
+    win.editor.setValue(content || '');
+    win.dirty = false;
+    win.root.querySelector('.dot-unsaved').classList.remove('show');
+    updateTaskbarButton(win);
+  } else {
+    win.editor.setValue(DEFAULT_CODE);
+  }
+})();
+</script>
+</body>
+</html>
